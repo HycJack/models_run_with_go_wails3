@@ -39,6 +39,8 @@ func main() {
 			application.NewService(NewOcrService(state)),
 			application.NewService(NewLlmService(state)),
 			application.NewService(NewAsrService(state)),
+			application.NewService(NewMathService(state)),
+			application.NewService(NewOllamaService(state)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

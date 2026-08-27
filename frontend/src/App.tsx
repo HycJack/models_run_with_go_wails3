@@ -6,6 +6,7 @@ import {
   MessageSquareText,
   Settings,
   ScanBarcode,
+  Percent,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToasts } from "@/lib/toast";
@@ -14,12 +15,14 @@ import OcrPage from "@/pages/OcrPage";
 import AsrPage from "@/pages/AsrPage";
 import ChatPage from "@/pages/ChatPage";
 import RuntimePage from "@/pages/RuntimePage";
+import MathPage from "@/pages/MathPage";
 
 const NAV = [
   { key: "models", label: "模型管理", icon: Boxes },
   { key: "ocr", label: "PaddleOCR", icon: ScanText },
   { key: "asr", label: "语音识别", icon: Mic },
   { key: "chat", label: "LLM 对话", icon: MessageSquareText },
+  { key: "math", label: "公式助手", icon: Percent },
   { key: "runtime", label: "运行环境", icon: Settings },
 ] as const;
 
@@ -72,6 +75,7 @@ export default function App() {
         {tab === "ocr" && <OcrPage />}
         {tab === "asr" && <AsrPage />}
         {tab === "chat" && <ChatPage />}
+        {tab === "math" && <MathPage />}
         {tab === "runtime" && <RuntimePage />}
       </main>
 

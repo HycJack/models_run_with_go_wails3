@@ -12,3 +12,4 @@ build/android/gen/.DS_Store
 *.log
 *.part
 .DS_Store
+cpm_orc

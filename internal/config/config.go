@@ -36,6 +36,8 @@ type Config struct {
 	AsrBackend string `json:"asrBackend"`
 	// SenseVoiceDir is the FunASR SenseVoiceSmall ONNX model directory.
 	SenseVoiceDir string `json:"senseVoiceDir"`
+	// OllamaHost is the Ollama server base URL (OpenAI-compatible chat API).
+	OllamaHost string `json:"ollamaHost"`
 }
 
 // Default returns the default configuration rooted in the user's home
@@ -55,6 +57,7 @@ func Default() *Config {
 		WhisperModel: filepath.Join(base, "models", "whisper", "ggml-base.bin"),
 		AsrBackend:   "sensevoice",
 		SenseVoiceDir: filepath.Join(base, "models", "sensevoice"),
+		OllamaHost:    "http://localhost:11434",
 	}
 }
 
