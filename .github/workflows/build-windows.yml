@@ -52,25 +52,27 @@ jobs:
       - name: Package NSIS installer (best effort)
         shell: bash
         run: |
-          wails3 package || echo "::warning::NSIS packaging failed; the raw exe will still be uploaded"
+          # wails3 package needs the makensis binary; install NSIS via choco.
+          if ! command -v makensis >/dev/null 2>&1; then
+            "/c/ProgramData/chocolatey/bin/choco.exe" install nsis -y --no-progress >/dev/null 2>&1 || true
+            export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          fi
+          if command -v makensis >/dev/null 2>&1; then
+            wails3 package || echo "::warning::NSIS packaging failed; the raw exe will still be uploaded"
+          else
+            echo "::warning::NSIS not available; skipping installer"
+          fi
 
       - name: Bundle ONNX Runtime DLL (best effort)
         shell: bash
         run: |
           # OnnxRuntime win-x64 native DLL so the exe can actually run OCR/LLM.
           mkdir -p bin
-          if curl -fsSL -o bin/onnxruntime.nupkg "https://globalcdn.nuget.org/packages/microsoft.ml.onnxruntime.1.29.0.nupkg"; then
-            python <<'PY' || true
-          import zipfile, shutil
-          z = zipfile.ZipFile("bin/onnxruntime.nupkg")
-          members = [m for m in z.namelist() if m.startswith("runtimes/win-x64/native/") and m.endswith(".dll")]
-          for m in members:
-              name = m.rsplit("/", 1)[1]
-              with z.open(m) as f, open("bin/" + name, "wb") as out:
-                  shutil.copyfileobj(f, out)
-          print("bundled onnxruntime dll files:", len(members))
-          PY
-            rm -f bin/onnxruntime.nupkg
+          if curl -fsSL -o /tmp/ort.zip "https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-win-x64-1.29.0.zip"; then
+            unzip -jo /tmp/ort.zip "onnxruntime-win-x64-1.29.0/lib/onnxruntime.dll" -d bin/ >/dev/null && \
+              echo "bundled onnxruntime.dll into bin/" || \
+              echo "::warning::ORT DLL not found in release archive"
+            rm -f /tmp/ort.zip
           else
             echo "::warning::ORT DLL download failed"
           fi
