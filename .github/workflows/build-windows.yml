@@ -1,0 +1,85 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.27.0"
+  NODE_VERSION: "22"
+  WAILS_VERSION: "v3.0.0-beta.14"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install wails3 CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@${{ env.WAILS_VERSION }}
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # GitHub's windows-latest image ships MSYS2 mingw-w64 gcc, which Go's
+      # cgo needs (the ONNX Runtime binding uses cgo). It is already on PATH.
+      - name: Verify C toolchain
+        shell: bash
+        run: |
+          gcc --version | head -1
+          go env CGO_ENABLED CC
+
+      - name: Build Windows binary
+        shell: bash
+        run: wails3 build
+
+      - name: Package NSIS installer (best effort)
+        shell: bash
+        run: |
+          wails3 package -platform windows/amd64 || echo "::warning::NSIS packaging failed; the raw exe will still be uploaded"
+
+      - name: Bundle ONNX Runtime DLL (best effort)
+        shell: bash
+        run: |
+          # OnnxRuntime win-x64 native DLL so the exe can actually run OCR/LLM.
+          curl -fsSLo /tmp/ort.zip "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/1.29.0" || { echo "::warning::ORT DLL download failed"; exit 0; }
+          python <<'PY' || true
+          import zipfile, shutil
+          z = zipfile.ZipFile("/tmp/ort.zip")
+          members = [m for m in z.namelist() if m.startswith("runtimes/win-x64/native/") and m.endswith(".dll")]
+          for m in members:
+              name = m.rsplit("/", 1)[1]
+              with z.open(m) as f, open("bin/" + name, "wb") as out:
+                  shutil.copyfileobj(f, out)
+          print("bundled onnxruntime dll files:", len(members))
+          PY
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpm-orc-windows
+          path: |
+            bin/*.exe
+          if-no-files-found: error
+
+      - name: Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/*.exe
+          fail_on_unmatched_files: false
+          draft: true
