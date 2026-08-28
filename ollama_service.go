@@ -195,29 +195,51 @@ func (s *OllamaService) VisionToLatex(model, imageB64 string) (string, error) {
 	return cleanLatex(out), nil
 }
 
-// VisionToProblem sends a problem image to the vision model and asks it to
-// reproduce the full content as LaTeX with inline SVG for figures.
+// VisionToProblem sends a problem image to the vision model and returns the
+// text + formulas as LaTeX (figures are NOT included — call VisionFiguresSVG
+// separately to get SVG code for the figures).
 func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) {
-	prompt := `你是数学题目识别助手。请完整识别图片中的所有内容，输出为 LaTeX 格式。
+	prompt := `你是数学题目识别助手。请完整识别图片中的文字和公式，输出为 LaTeX 格式。
 
 规则：
 1. 题目文字用 \text{} 包裹，保持中文
 2. 数学公式用 $...$ 或 $$...$$ 表示
-3. 配图/几何图形用 <svg> 代码绘制（不是 \includegraphics）
-4. 保持题目的原始结构和排版顺序
-5. 不要添加解释，只输出内容
+3. 保持题目的原始结构和排版顺序
+4. 不要添加解释，只输出内容
+5. 不要尝试画图或输出 SVG
+6. 使用 align* 环境对齐多行公式（如有）`
 
-SVG 绘图要求：
-- 使用 <svg viewBox="..." xmlns="http://www.w3.org/2000/svg">
-- 用 <line> 画线段，<circle> 画圆，<path> 画曲线，<rect> 画矩形
-- 用 <text> 标注顶点字母和数值（font-size=14, text-anchor=middle）
-- 直角用小正方形标注（两条短线段）
-- viewBox 大小合适（通常 0 0 300 200）
-- stroke="black" stroke-width="1.5"
-- 虚线用 stroke-dasharray="5,3"
+	msgs := []ollamaMessage{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: "完整识别并输出这道题目的文字和公式为 LaTeX 格式", Images: []string{imageB64}},
+	}
+	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 2048})
+	if err != nil {
+		return "", err
+	}
+	return cleanProblemLatex(out), nil
+}
 
-示例输出：
-\text{（1）如图所示，}
+// VisionFiguresSVG sends the original problem image to the vision model and
+// asks it to identify all figures and output SVG code for each one.
+func (s *OllamaService) VisionFiguresSVG(model, imageB64 string) (string, error) {
+	prompt := `请识别图片中的所有配图/几何图形，为每个图形生成 SVG 代码。
+
+要求：
+1. 每个图形单独输出一个 <svg>...</svg> 块
+2. 在每个 SVG 前加一行标注，如：\text{图 1：} 或 \text{图 2：}
+3. 使用 <svg viewBox="..." xmlns="http://www.w3.org/2000/svg">
+4. 用 <line> 画线段，<circle> 画圆，<path> 画曲线，<rect> 画矩形
+5. 用 <text> 标注顶点字母和数值（font-size=14, text-anchor=middle）
+6. 直角用小正方形标注
+7. 虚线用 stroke-dasharray="5,3"
+8. stroke="black" stroke-width="1.5"
+9. viewBox 大小合适（通常 0 0 300 200）
+
+如果图片中没有配图，输出：\text{（无配图）}
+
+示例：
+\text{图 1：}
 <svg viewBox="0 0 200 150" xmlns="http://www.w3.org/2000/svg">
   <line x1="20" y1="130" x2="180" y2="130" stroke="black" stroke-width="1.5"/>
   <line x1="20" y1="130" x2="100" y2="20" stroke="black" stroke-width="1.5"/>
@@ -225,13 +247,11 @@ SVG 绘图要求：
   <text x="15" y="145" font-size="14">A</text>
   <text x="100" y="15" font-size="14">B</text>
   <text x="185" y="145" font-size="14">C</text>
-</svg>
-\text{，已知 AB = 3，BC = 4，求 AC 的长度。}
-$AC = \sqrt{AB^2 + BC^2} = 5$`
+</svg>`
 
 	msgs := []ollamaMessage{
 		{Role: "system", Content: prompt},
-		{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX + SVG 格式", Images: []string{imageB64}},
+		{Role: "user", Content: "识别图片中的所有配图并为每个生成 SVG 代码", Images: []string{imageB64}},
 	}
 	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 4096})
 	if err != nil {

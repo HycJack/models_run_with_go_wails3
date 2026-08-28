@@ -74,6 +74,7 @@ export default function MathPage() {
   const [visionModel, setVisionModel] = useState("");
   const [zoom, setZoom] = useState(false);
   const [imgMode, setImgMode] = useState<"formula" | "problem">("formula");
+  const [figuresSvg, setFiguresSvg] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -118,8 +119,27 @@ export default function MathPage() {
             ? await OllamaService.VisionToLatex(visionModel, imageB64!)
             : await MathService.OcrToLatex(imageB64!));
       await apply(l);
+      setFiguresSvg("");
       setMode("edit");
       toast(source === "problem" ? "已识别题目内容" : "已生成 LaTeX");
+    } catch (e) { toast(String(e), true); }
+    finally { setBusy(false); }
+  };
+
+  const recognizeFigures = async () => {
+    if (!imageB64 || backend !== "ollama") return;
+    setBusy(true);
+    try {
+      const svg = await OllamaService.VisionFiguresSVG(visionModel, imageB64);
+      if (!svg || svg.includes("无配图")) {
+        toast("未检测到配图");
+        return;
+      }
+      setFiguresSvg(svg);
+      // append to existing latex
+      const combined = (latex ? latex + "\n\n" : "") + svg;
+      await apply(combined);
+      toast("已识别配图");
     } catch (e) { toast(String(e), true); }
     finally { setBusy(false); }
   };
@@ -251,9 +271,16 @@ export default function MathPage() {
                         完整题目
                       </button>
                     </div>
-                    <Button variant="secondary" onClick={() => toLatex(imgMode === "problem" ? "problem" : "image")} disabled={busy}>
-                      <Percent className="h-4 w-4" />{imgMode === "problem" ? "识别题目" : "公式→LaTeX"}
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button variant="secondary" onClick={() => toLatex(imgMode === "problem" ? "problem" : "image")} disabled={busy}>
+                        <Percent className="h-4 w-4" />{imgMode === "problem" ? "识别题目" : "公式→LaTeX"}
+                      </Button>
+                      {imgMode === "problem" && backend === "ollama" && (
+                        <Button variant="outline" onClick={recognizeFigures} disabled={busy}>
+                          <ImagePlus className="h-4 w-4" />识别配图
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   {busy && <Button variant="ghost" onClick={stop}><Square className="h-4 w-4 fill-current" />停止</Button>}
                 </>
