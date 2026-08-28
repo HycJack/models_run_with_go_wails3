@@ -201,7 +201,7 @@ func (s *OllamaService) VisionToLatex(model, imageB64 string) (string, error) {
 
 // VisionToProblem sends a problem image (containing text + formulas + figures)
 // to a multimodal Ollama model and returns the full problem reproduced in
-// LaTeX — text as \text{}, formulas in math mode, figures embedded as base64.
+// LaTeX — text as \text{}, formulas in math mode, figures as SVG code.
 func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) {
 	// Step 1: detect figure regions in the original image
 	figures, err := detectFigures(imageB64)
@@ -213,7 +213,7 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	prompt := `你是数学题目识别助手。请完整识别图片中的所有内容，包括：
 1. 题目文字（题号、题干、选项等），用 \text{} 包裹
 2. 数学公式，用 $...$ 或 $$...$$ 表示
-3. 遇到配图/图形时，用文字描述图的内容（如：图中是一个直角三角形）
+3. 遇到配图/图形时，用 \text{（如图所示，...描述图的内容...）} 描述
 
 输出要求：
 - 保持题目的原始结构和排版顺序
@@ -225,7 +225,7 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 
 	msgs := []ollamaMessage{
 		{Role: "system", Content: prompt},
-			{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
+		{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
 	}
 	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 2048})
 	if err != nil {
@@ -233,44 +233,124 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	}
 	result := cleanProblemLatex(out)
 
-	// Step 3: embed detected figures after "如图" references or at end
+	// Step 3: for each detected figure, try to generate SVG via the vision model
 	if len(figures) > 0 {
-		result = embedFigures(result, figures)
+		result = s.embedFiguresAsSVG(result, figures)
 	}
 
 	return result, nil
 }
 
-// embedFigures inserts base64 <img> tags into the LaTeX string. It looks for
-// Chinese figure references like "如图", "如图所示", "图中" and inserts the
-// figure image right after the closing paren/bracket. Remaining figures are
-// appended at the end.
-func embedFigures(latex string, figures []string) string {
+// embedFiguresAsSVG tries to generate SVG code for each detected figure by
+// sending the cropped image to the vision model. Falls back to base64 <img>.
+func (s *OllamaService) embedFiguresAsSVG(latex string, figures []string) string {
 	used := make([]bool, len(figures))
 	result := latex
 
-	// Pattern: 如图, 如图所示, 图中, 图1, 图 1, etc.
+	// Pattern: 如图, 如图所示, 图中, 图1, etc.
 	re := regexp.MustCompile(`(如图[^））\]]*[））\]]?|图\s*\d+\s*[））\]]?)`)
+
 	result = re.ReplaceAllStringFunc(result, func(match string) string {
-		// find next unused figure
 		for i := range figures {
 			if !used[i] {
 				used[i] = true
-				tag := fmt.Sprintf(`<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, figures[i])
-				return match + "\n" + tag
+				svg := s.tryGenerateSVG(figures[i])
+				if svg != "" {
+					return match + "\n" + svg
+				}
+				// fallback: base64 image
+				return match + "\n" + fmt.Sprintf(`<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, figures[i])
 			}
 		}
 		return match
 	})
 
-	// Append any remaining figures at the end
+	// Append remaining figures
 	for i, fig := range figures {
 		if !used[i] {
-			tag := fmt.Sprintf(`\n\n<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, fig)
-			result += tag
+			svg := s.tryGenerateSVG(fig)
+			if svg != "" {
+				result += "\n\n" + svg
+			} else {
+				result += fmt.Sprintf(`\n\n<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, fig)
+			}
 		}
 	}
 	return result
+}
+
+// tryGenerateSVG sends a cropped figure image to the vision model and asks it
+// to generate SVG code. Returns the <svg>...</svg> string or "" on failure.
+func (s *OllamaService) tryGenerateSVG(imgB64 string) string {
+	prompt := `请分析这个几何图形，生成精确的 SVG 代码来绘制它。
+
+要求：
+1. 使用 <svg viewBox="..." xmlns="http://www.w3.org/2000/svg"> 格式
+2. 用 <line> 画线段，<circle> 画圆，<path> 画曲线/弧
+3. 用 <text> 标注顶点字母（如 A、B、C）和数值
+4. 直角用小正方形标注
+5. 虚线用 stroke-dasharray
+6. 只输出 SVG 代码，不要任何解释
+7. viewBox 大小合适，图形居中
+
+示例格式：
+<svg viewBox="0 0 200 150" xmlns="http://www.w3.org/2000/svg">
+  <line x1="20" y1="130" x2="180" y2="130" stroke="black" stroke-width="1.5"/>
+  <text x="15" y="145" font-size="14">A</text>
+</svg>`
+
+	msgs := []ollamaMessage{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: "请为这个图形生成 SVG 代码", Images: []string{imgB64}},
+	}
+	out, err := s.chat(s.findVisionModel(), msgs, map[string]any{"temperature": 0.1, "num_predict": 1024})
+	if err != nil || out == "" {
+		return ""
+	}
+	return extractSVG(out)
+}
+
+// findVisionModel returns the first model name that looks like a vision model.
+func (s *OllamaService) findVisionModel() string {
+	models, _ := s.ListModels()
+	for _, m := range models {
+		if strings.Contains(strings.ToLower(m.Name), "minicpm-v") ||
+			strings.Contains(strings.ToLower(m.Name), "vl") ||
+			strings.Contains(strings.ToLower(m.Name), "vision") {
+			return m.Name
+		}
+	}
+	if len(models) > 0 {
+		return models[0].Name
+	}
+	return ""
+}
+
+// extractSVG pulls an <svg>...</svg> block from the model output.
+func extractSVG(s string) string {
+	// try to find <svg ...>...</svg>
+	start := strings.Index(s, "<svg")
+	if start < 0 {
+		start = strings.Index(s, "<SVG")
+	}
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(s[start:], "</svg>")
+	if end < 0 {
+		end = strings.Index(s[start:], "</SVG>")
+	}
+	if end < 0 {
+		return ""
+	}
+	svg := s[start : start+end+6] // +6 for "</svg>"
+	// basic validation: must contain <line or <circle or <path or <rect or <text
+	if !strings.Contains(svg, "<line") && !strings.Contains(svg, "<circle") &&
+		!strings.Contains(svg, "<path") && !strings.Contains(svg, "<rect") &&
+		!strings.Contains(svg, "<text") {
+		return ""
+	}
+	return svg
 }
 
 // detectFigures finds non-text figure regions in a base64-encoded image and
