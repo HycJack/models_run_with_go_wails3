@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -205,30 +206,26 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	// Step 1: detect figure regions in the original image
 	figures, err := detectFigures(imageB64)
 	if err != nil {
-		figures = nil // degrade gracefully
+		figures = nil
 	}
 
-	// Step 2: ask the model to output text + formulas, marking figures
-	figureHint := ""
-	if len(figures) > 0 {
-		figureHint = fmt.Sprintf("\n\n图片中检测到 %d 个配图区域。请在对应位置用 [FIGURE_0]、[FIGURE_1] 等标记占位。", len(figures))
-	}
-	prompt := fmt.Sprintf(`你是数学题目识别助手。请完整识别图片中的所有内容，包括：
-1. 题目文字（题号、题干、选项等），用 \\text{{}} 包裹
+	// Step 2: ask the model to output text + formulas
+	prompt := `你是数学题目识别助手。请完整识别图片中的所有内容，包括：
+1. 题目文字（题号、题干、选项等），用 \text{} 包裹
 2. 数学公式，用 $...$ 或 $$...$$ 表示
-3. 配图/图形用 [FIGURE_N] 标记占位（N 从0开始）
+3. 遇到配图/图形时，用文字描述图的内容（如：图中是一个直角三角形）
 
 输出要求：
 - 保持题目的原始结构和排版顺序
-- 文字部分用 \\text{{}} 包裹，保持中文
+- 文字部分用 \text{} 包裹，保持中文
 - 公式用标准 LaTeX 数学模式
-- 配图位置用 [FIGURE_N] 标记，不要尝试用 \\includegraphics
+- 遇到配图时写 \text{（如图所示，...描述图的内容...）}
 - 不要添加解释，只输出 LaTeX 内容
-- 使用 align* 环境对齐多行公式（如有）%s`, figureHint)
+- 使用 align* 环境对齐多行公式（如有）`
 
 	msgs := []ollamaMessage{
 		{Role: "system", Content: prompt},
-		{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
+			{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
 	}
 	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 2048})
 	if err != nil {
@@ -236,21 +233,44 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	}
 	result := cleanProblemLatex(out)
 
-	// Step 3: replace [FIGURE_N] markers with embedded base64 images
-	for i, fig := range figures {
-		tag := fmt.Sprintf("[FIGURE_%d]", i)
-		if i < len(figures) {
-			dataURI := fmt.Sprintf(`<img src="data:image/png;base64,%s" style="max-width:100%%;height:auto;" />`, fig)
-			result = strings.ReplaceAll(result, tag, dataURI)
-		}
-	}
-	// also replace any remaining markers the model didn't use
-	for i := len(figures); i < 10; i++ {
-		tag := fmt.Sprintf("[FIGURE_%d]", i)
-		result = strings.ReplaceAll(result, tag, "")
+	// Step 3: embed detected figures after "如图" references or at end
+	if len(figures) > 0 {
+		result = embedFigures(result, figures)
 	}
 
 	return result, nil
+}
+
+// embedFigures inserts base64 <img> tags into the LaTeX string. It looks for
+// Chinese figure references like "如图", "如图所示", "图中" and inserts the
+// figure image right after the closing paren/bracket. Remaining figures are
+// appended at the end.
+func embedFigures(latex string, figures []string) string {
+	used := make([]bool, len(figures))
+	result := latex
+
+	// Pattern: 如图, 如图所示, 图中, 图1, 图 1, etc.
+	re := regexp.MustCompile(`(如图[^））\]]*[））\]]?|图\s*\d+\s*[））\]]?)`)
+	result = re.ReplaceAllStringFunc(result, func(match string) string {
+		// find next unused figure
+		for i := range figures {
+			if !used[i] {
+				used[i] = true
+				tag := fmt.Sprintf(`<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, figures[i])
+				return match + "\n" + tag
+			}
+		}
+		return match
+	})
+
+	// Append any remaining figures at the end
+	for i, fig := range figures {
+		if !used[i] {
+			tag := fmt.Sprintf(`\n\n<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, fig)
+			result += tag
+		}
+	}
+	return result
 }
 
 // detectFigures finds non-text figure regions in a base64-encoded image and
@@ -278,20 +298,19 @@ func detectFigures(imgB64 string) ([]string, error) {
 		}
 	}
 
-	// Simple connected-component labeling via flood fill
+	// Simple connected-component labeling via flood fill (8-connectivity)
 	visited := make([]bool, w*h)
 	type box struct{ x0, y0, x1, y1 int }
 	var blobs []box
 
-	for y := 0; y < h; y += 3 { // sample every 3rd pixel for speed
-		for x := 0; x < w; x += 3 {
+	for y := 0; y < h; y += 2 { // sample every 2nd pixel
+		for x := 0; x < w; x += 2 {
 			if bin[y*w+x] && !visited[y*w+x] {
-				// flood fill
 				b := box{x, y, x, y}
 				queue := [][2]int{{x, y}}
 				visited[y*w+x] = true
 				area := 0
-				for len(queue) > 0 && area < 200000 {
+				for len(queue) > 0 && area < 500000 {
 					cx, cy := queue[0][0], queue[0][1]
 					queue = queue[1:]
 					area++
@@ -299,7 +318,8 @@ func detectFigures(imgB64 string) ([]string, error) {
 					if cx > b.x1 { b.x1 = cx }
 					if cy < b.y0 { b.y0 = cy }
 					if cy > b.y1 { b.y1 = cy }
-					for _, d := range [][2]int{{-3,0},{3,0},{0,-3},{0,3}} {
+					// 8-connectivity: include diagonals
+					for _, d := range [][2]int{{-2,0},{2,0},{0,-2},{0,2},{-2,-2},{2,-2},{-2,2},{2,2}} {
 						nx, ny := cx+d[0], cy+d[1]
 						if nx >= 0 && nx < w && ny >= 0 && ny < h && bin[ny*w+nx] && !visited[ny*w+nx] {
 							visited[ny*w+nx] = true
@@ -313,18 +333,17 @@ func detectFigures(imgB64 string) ([]string, error) {
 	}
 
 	// Filter: keep blobs that are large enough and roughly figure-shaped
-	// (wide + tall, not just a text line)
 	var figures []string
-	minArea := w * h / 40 // at least 2.5% of image
+	minArea := w * h / 100 // at least 1% of image
 	for _, b := range blobs {
 		bw, bh := b.x1-b.x0, b.y1-b.y0
 		area := bw * bh
 		if area < minArea { continue }
-		// figure should be reasonably wide and tall (not just a line)
-		if bw < w/6 || bh < h/8 { continue }
+		// figure should be reasonably wide and tall
+		if bw < w/8 || bh < h/10 { continue }
 		// aspect ratio: not too skinny
 		aspect := float64(bw) / float64(bh)
-		if aspect < 0.15 || aspect > 7.0 { continue }
+		if aspect < 0.1 || aspect > 10.0 { continue }
 
 		// crop with padding
 		pad := 10
