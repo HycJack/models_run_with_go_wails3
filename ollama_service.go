@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"strings"
@@ -197,20 +200,32 @@ func (s *OllamaService) VisionToLatex(model, imageB64 string) (string, error) {
 
 // VisionToProblem sends a problem image (containing text + formulas + figures)
 // to a multimodal Ollama model and returns the full problem reproduced in
-// LaTeX — text as \text{}, formulas in math mode, figures as placeholders.
+// LaTeX — text as \text{}, formulas in math mode, figures embedded as base64.
 func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) {
-	prompt := `你是数学题目识别助手。请完整识别图片中的所有内容，包括：
-1. 题目文字（题号、题干、选项等），用 \text{} 包裹
+	// Step 1: detect figure regions in the original image
+	figures, err := detectFigures(imageB64)
+	if err != nil {
+		figures = nil // degrade gracefully
+	}
+
+	// Step 2: ask the model to output text + formulas, marking figures
+	figureHint := ""
+	if len(figures) > 0 {
+		figureHint = fmt.Sprintf("\n\n图片中检测到 %d 个配图区域。请在对应位置用 [FIGURE_0]、[FIGURE_1] 等标记占位。", len(figures))
+	}
+	prompt := fmt.Sprintf(`你是数学题目识别助手。请完整识别图片中的所有内容，包括：
+1. 题目文字（题号、题干、选项等），用 \\text{{}} 包裹
 2. 数学公式，用 $...$ 或 $$...$$ 表示
-3. 图片中的图形/图表，用 \includegraphics[width=0.6\linewidth]{figure} 占位
+3. 配图/图形用 [FIGURE_N] 标记占位（N 从0开始）
 
 输出要求：
 - 保持题目的原始结构和排版顺序
-- 文字部分用 \text{} 包裹，保持中文
+- 文字部分用 \\text{{}} 包裹，保持中文
 - 公式用标准 LaTeX 数学模式
-- 图形用 \includegraphics 占位
+- 配图位置用 [FIGURE_N] 标记，不要尝试用 \\includegraphics
 - 不要添加解释，只输出 LaTeX 内容
-- 使用 align* 环境对齐多行公式（如有）`
+- 使用 align* 环境对齐多行公式（如有）%s`, figureHint)
+
 	msgs := []ollamaMessage{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
@@ -219,7 +234,120 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return cleanProblemLatex(out), nil
+	result := cleanProblemLatex(out)
+
+	// Step 3: replace [FIGURE_N] markers with embedded base64 images
+	for i, fig := range figures {
+		tag := fmt.Sprintf("[FIGURE_%d]", i)
+		if i < len(figures) {
+			dataURI := fmt.Sprintf(`<img src="data:image/png;base64,%s" style="max-width:100%%;height:auto;" />`, fig)
+			result = strings.ReplaceAll(result, tag, dataURI)
+		}
+	}
+	// also replace any remaining markers the model didn't use
+	for i := len(figures); i < 10; i++ {
+		tag := fmt.Sprintf("[FIGURE_%d]", i)
+		result = strings.ReplaceAll(result, tag, "")
+	}
+
+	return result, nil
+}
+
+// detectFigures finds non-text figure regions in a base64-encoded image and
+// returns their base64-encoded PNG crops. Uses simple connected-component
+// analysis: large blobs that aren't text lines are treated as figures.
+func detectFigures(imgB64 string) ([]string, error) {
+	raw, err := base64.StdEncoding.DecodeString(imgB64)
+	if err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	// Convert to binary (non-white = black)
+	bin := make([]bool, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			r, g, b, _ := img.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
+			gray := (r*299 + g*587 + b*114) / 1000
+			bin[y*w+x] = gray < 48000 // threshold: non-white
+		}
+	}
+
+	// Simple connected-component labeling via flood fill
+	visited := make([]bool, w*h)
+	type box struct{ x0, y0, x1, y1 int }
+	var blobs []box
+
+	for y := 0; y < h; y += 3 { // sample every 3rd pixel for speed
+		for x := 0; x < w; x += 3 {
+			if bin[y*w+x] && !visited[y*w+x] {
+				// flood fill
+				b := box{x, y, x, y}
+				queue := [][2]int{{x, y}}
+				visited[y*w+x] = true
+				area := 0
+				for len(queue) > 0 && area < 200000 {
+					cx, cy := queue[0][0], queue[0][1]
+					queue = queue[1:]
+					area++
+					if cx < b.x0 { b.x0 = cx }
+					if cx > b.x1 { b.x1 = cx }
+					if cy < b.y0 { b.y0 = cy }
+					if cy > b.y1 { b.y1 = cy }
+					for _, d := range [][2]int{{-3,0},{3,0},{0,-3},{0,3}} {
+						nx, ny := cx+d[0], cy+d[1]
+						if nx >= 0 && nx < w && ny >= 0 && ny < h && bin[ny*w+nx] && !visited[ny*w+nx] {
+							visited[ny*w+nx] = true
+							queue = append(queue, [2]int{nx, ny})
+						}
+					}
+				}
+				blobs = append(blobs, b)
+			}
+		}
+	}
+
+	// Filter: keep blobs that are large enough and roughly figure-shaped
+	// (wide + tall, not just a text line)
+	var figures []string
+	minArea := w * h / 40 // at least 2.5% of image
+	for _, b := range blobs {
+		bw, bh := b.x1-b.x0, b.y1-b.y0
+		area := bw * bh
+		if area < minArea { continue }
+		// figure should be reasonably wide and tall (not just a line)
+		if bw < w/6 || bh < h/8 { continue }
+		// aspect ratio: not too skinny
+		aspect := float64(bw) / float64(bh)
+		if aspect < 0.15 || aspect > 7.0 { continue }
+
+		// crop with padding
+		pad := 10
+		cx0 := b.x0 - pad; if cx0 < 0 { cx0 = 0 }
+		cy0 := b.y0 - pad; if cy0 < 0 { cy0 = 0 }
+		cx1 := b.x1 + pad; if cx1 > w { cx1 = w }
+		cy1 := b.y1 + pad; if cy1 > h { cy1 = h }
+
+		// create cropped image
+		crop := image.NewRGBA(image.Rect(0, 0, cx1-cx0, cy1-cy0))
+		for cy := cy0; cy < cy1; cy++ {
+			for cx := cx0; cx < cx1; cx++ {
+				crop.Set(cx-cx0, cy-cy0, img.At(cx+bounds.Min.X, cy+bounds.Min.Y))
+			}
+		}
+
+		// encode to PNG base64
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, crop); err == nil {
+			figures = append(figures, base64.StdEncoding.EncodeToString(buf.Bytes()))
+		}
+	}
+	return figures, nil
 }
 
 // cleanProblemLatex strips markdown fences and leading/trailing prose from a

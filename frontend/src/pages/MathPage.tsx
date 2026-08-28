@@ -20,8 +20,8 @@ function renderLatex(latex: string): string {
 
 function renderProblem(content: string): string {
   if (!content) return "";
-  // Quick check: if content is mostly math (no \text or \includegraphics), render directly
-  if (!/\\text\s*\{/.test(content) && !/\\includegraphics/.test(content)) {
+  // Quick check: if content is mostly math (no \text or embedded images), render directly
+  if (!/\\text\s*\{/.test(content) && !/<img\s+src=/.test(content) && !/\\includegraphics/.test(content)) {
     return renderLatex(content);
   }
   // Mixed content: split into math / non-math segments
@@ -46,7 +46,7 @@ function renderProblem(content: string): string {
       else if (t.startsWith("\\(") && t.endsWith("\\)")) t = t.slice(2, -2);
       return renderLatex(t.trim());
     }
-    // Non-math: replace \includegraphics with placeholder, wrap Chinese in spans
+    // Non-math: preserve embedded <img> tags, replace \includegraphics with placeholder
     let t = seg.text
       .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, (m) => {
         const cap = m.match(/\{([^}]*)\}/);
@@ -301,7 +301,7 @@ export default function MathPage() {
           {result ? (
             <div className="overflow-x-auto rounded-lg border bg-muted p-5"
               dangerouslySetInnerHTML={{
-                __html: /\\text\s*\{|\\includegraphics|\\begin\{/.test(result)
+                __html: /\\text\s*\{|<img\s+src=|\\includegraphics|\\begin\{/.test(result)
                   ? renderProblem(result)
                   : renderLatex(result)
               }} />
