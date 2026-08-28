@@ -84,7 +84,7 @@ jobs:
           path: |
             bin/cpm-orc.exe
             bin/*.dll
-            build/windows/nsis/*-installer.exe
+            bin/*-installer.exe
           if-no-files-found: error
 
       - name: Release (on tag push)
@@ -94,6 +94,5 @@ jobs:
           files: |
             bin/*.exe
             bin/*.dll
-            build/windows/nsis/*-installer.exe
           fail_on_unmatched_files: false
           draft: true
