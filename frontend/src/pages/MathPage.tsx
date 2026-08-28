@@ -10,9 +10,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
 import { MathService, OllamaService, LlmService } from "@bindings/cpm_orc";
 
-function renderLatex(latex: string): string {
+function renderLatex(latex: string, display = true): string {
   try {
-    return katex.renderToString(latex, { throwOnError: false, displayMode: true, strict: false });
+    return katex.renderToString(latex, { throwOnError: false, displayMode: display, strict: false });
   } catch {
     return `<span class="text-destructive">渲染失败</span>`;
   }
@@ -40,11 +40,12 @@ function renderProblem(content: string): string {
   return segments.map((seg) => {
     if (seg.math) {
       let t = seg.text;
-      if (t.startsWith("$$") && t.endsWith("$$")) t = t.slice(2, -2);
-      else if (t.startsWith("$") && t.endsWith("$")) t = t.slice(1, -1);
-      else if (t.startsWith("\\[") && t.endsWith("\\]")) t = t.slice(2, -2);
-      else if (t.startsWith("\\(") && t.endsWith("\\)")) t = t.slice(2, -2);
-      return renderLatex(t.trim());
+      let isDisplay = false;
+      if (t.startsWith("$$") && t.endsWith("$$")) { t = t.slice(2, -2); isDisplay = true; }
+      else if (t.startsWith("\\[") && t.endsWith("\\]")) { t = t.slice(2, -2); isDisplay = true; }
+      else if (t.startsWith("$") && t.endsWith("$")) { t = t.slice(1, -1); }
+      else if (t.startsWith("\\(") && t.endsWith("\\)")) { t = t.slice(2, -2); }
+      return renderLatex(t.trim(), isDisplay);
     }
     // Non-math: preserve embedded <img> tags, replace \includegraphics with placeholder
     let t = seg.text
@@ -299,11 +300,11 @@ export default function MathPage() {
         </CardHeader>
         <CardContent>
           {result ? (
-            <div className="overflow-x-auto rounded-lg border bg-muted p-5"
+            <div className="overflow-x-auto rounded-lg border bg-muted p-5 leading-relaxed"
               dangerouslySetInnerHTML={{
                 __html: /\\text\s*\{|<img\s+src=|\\includegraphics|\\begin\{/.test(result)
                   ? renderProblem(result)
-                  : renderLatex(result)
+                  : renderLatex(result, true)
               }} />
           ) : (
             <p className="text-sm text-muted-foreground">生成或编辑 LaTeX 后在此预览</p>
