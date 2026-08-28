@@ -47,7 +47,12 @@ jobs:
 
       - name: Package .app bundle
         shell: bash
-        run: wails3 task darwin:package
+        run: |
+          # Skip `darwin:package` (it re-runs `build` which conflicts with the
+          # universal binary already at bin/cpm-orc).  Call the lower-level
+          # tasks directly: create the .app directory then ad-hoc sign it.
+          wails3 task darwin:create:app:bundle
+          wails3 task darwin:codesign:adhoc
 
       - name: Create DMG installer (best effort)
         shell: bash
