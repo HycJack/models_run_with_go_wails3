@@ -345,11 +345,14 @@ func detectFigures(imgB64 string) ([]string, error) {
 		if aspect < 0.1 || aspect > 10.0 {
 			continue
 		}
-		pad := 10
-		cx0 := b.x0 - pad; if cx0 < 0 { cx0 = 0 }
-		cy0 := b.y0 - pad; if cy0 < 0 { cy0 = 0 }
-		cx1 := b.x1 + pad; if cx1 > w { cx1 = w }
-		cy1 := b.y1 + pad; if cy1 > h { cy1 = h }
+		// Expand bounding box to include nearby text labels (A, B, C, etc.)
+		// Use generous padding: max of 40px or 15% of figure dimension
+		padX := bw * 15 / 100; if padX < 40 { padX = 40 }
+		padY := bh * 15 / 100; if padY < 40 { padY = 40 }
+		cx0 := b.x0 - padX; if cx0 < 0 { cx0 = 0 }
+		cy0 := b.y0 - padY; if cy0 < 0 { cy0 = 0 }
+		cx1 := b.x1 + padX; if cx1 > w { cx1 = w }
+		cy1 := b.y1 + padY; if cy1 > h { cy1 = h }
 
 		crop := image.NewRGBA(image.Rect(0, 0, cx1-cx0, cy1-cy0))
 		for cy := cy0; cy < cy1; cy++ {
