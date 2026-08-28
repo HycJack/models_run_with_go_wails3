@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"strings"
@@ -220,44 +223,146 @@ func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) 
 	return cleanProblemLatex(out), nil
 }
 
-// VisionFiguresSVG sends the original problem image to the vision model and
-// asks it to identify all figures and output SVG code for each one.
+// VisionFiguresSVG detects figure regions in the problem image, crops them,
+// and for each one: embeds the cropped image (accurate) + asks the model to
+// generate SVG code (editable reference).
 func (s *OllamaService) VisionFiguresSVG(model, imageB64 string) (string, error) {
-	prompt := `请识别图片中的所有配图/几何图形，为每个图形生成 SVG 代码。
+	figures, err := detectFigures(imageB64)
+	if err != nil || len(figures) == 0 {
+		return `\text{（无配图）}`, nil
+	}
 
-要求：
-1. 每个图形单独输出一个 <svg>...</svg> 块
-2. 在每个 SVG 前加一行标注，如：\text{图 1：} 或 \text{图 2：}
-3. 使用 <svg viewBox="..." xmlns="http://www.w3.org/2000/svg">
-4. 用 <line> 画线段，<circle> 画圆，<path> 画曲线，<rect> 画矩形
-5. 用 <text> 标注顶点字母和数值（font-size=14, text-anchor=middle）
-6. 直角用小正方形标注
-7. 虚线用 stroke-dasharray="5,3"
-8. stroke="black" stroke-width="1.5"
-9. viewBox 大小合适（通常 0 0 300 200）
+	var result strings.Builder
+	for i, figB64 := range figures {
+		fmt.Fprintf(&result, `\text{图 %d：}`, i+1)
+		result.WriteString("\n\n")
 
-如果图片中没有配图，输出：\text{（无配图）}
+		// Always embed the cropped image (accurate)
+		result.WriteString(fmt.Sprintf(
+			`<img src="data:image/png;base64,%s" style="max-width:60%%;height:auto;display:block;margin:8px auto;" />`, figB64))
+		result.WriteString("\n\n")
 
-示例：
-\text{图 1：}
-<svg viewBox="0 0 200 150" xmlns="http://www.w3.org/2000/svg">
-  <line x1="20" y1="130" x2="180" y2="130" stroke="black" stroke-width="1.5"/>
-  <line x1="20" y1="130" x2="100" y2="20" stroke="black" stroke-width="1.5"/>
-  <line x1="100" y1="20" x2="180" y2="130" stroke="black" stroke-width="1.5"/>
-  <text x="15" y="145" font-size="14">A</text>
-  <text x="100" y="15" font-size="14">B</text>
-  <text x="185" y="145" font-size="14">C</text>
-</svg>`
+		// Try to generate SVG (best-effort, may be inaccurate)
+		svg := s.tryGenerateSVG(model, figB64)
+		if svg != "" {
+			result.WriteString(`<details><summary>SVG 代码（可编辑）</summary>`)
+			result.WriteString("\n")
+			result.WriteString(svg)
+			result.WriteString("\n</details>")
+			result.WriteString("\n\n")
+		}
+	}
+	return result.String(), nil
+}
 
+// tryGenerateSVG sends a cropped figure image to the model and asks for SVG.
+func (s *OllamaService) tryGenerateSVG(model, imgB64 string) string {
+	prompt := `请为这个几何图形生成 SVG 绘图代码。
+要求：<svg viewBox="..." xmlns="http://www.w3.org/2000/svg"> 格式，用 <line> 画线段，<text> 标注字母，stroke="black" stroke-width="1.5"。只输出 SVG 代码。`
 	msgs := []ollamaMessage{
 		{Role: "system", Content: prompt},
-		{Role: "user", Content: "识别图片中的所有配图并为每个生成 SVG 代码", Images: []string{imageB64}},
+		{Role: "user", Content: "生成 SVG", Images: []string{imgB64}},
 	}
-	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 4096})
+	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.1, "num_predict": 1024})
+	if err != nil || out == "" {
+		return ""
+	}
+	// extract <svg>...</svg>
+	start := strings.Index(out, "<svg")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(out[start:], "</svg>")
+	if end < 0 {
+		return ""
+	}
+	return out[start : start+end+6]
+}
+
+// detectFigures finds large non-text blobs in a base64 image and returns
+// their base64-encoded PNG crops.
+func detectFigures(imgB64 string) ([]string, error) {
+	raw, err := base64.StdEncoding.DecodeString(imgB64)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return cleanProblemLatex(out), nil
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	bin := make([]bool, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			r, g, b, _ := img.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
+			gray := (r*299 + g*587 + b*114) / 1000
+			bin[y*w+x] = gray < 48000
+		}
+	}
+
+	visited := make([]bool, w*h)
+	type box struct{ x0, y0, x1, y1 int }
+	var blobs []box
+
+	for y := 0; y < h; y += 2 {
+		for x := 0; x < w; x += 2 {
+			if bin[y*w+x] && !visited[y*w+x] {
+				b := box{x, y, x, y}
+				queue := [][2]int{{x, y}}
+				visited[y*w+x] = true
+				area := 0
+				for len(queue) > 0 && area < 500000 {
+					cx, cy := queue[0][0], queue[0][1]
+					queue = queue[1:]
+					area++
+					if cx < b.x0 { b.x0 = cx }
+					if cx > b.x1 { b.x1 = cx }
+					if cy < b.y0 { b.y0 = cy }
+					if cy > b.y1 { b.y1 = cy }
+					for _, d := range [][2]int{{-2, 0}, {2, 0}, {0, -2}, {0, 2}, {-2, -2}, {2, -2}, {-2, 2}, {2, 2}} {
+						nx, ny := cx+d[0], cy+d[1]
+						if nx >= 0 && nx < w && ny >= 0 && ny < h && bin[ny*w+nx] && !visited[ny*w+nx] {
+							visited[ny*w+nx] = true
+							queue = append(queue, [2]int{nx, ny})
+						}
+					}
+				}
+				blobs = append(blobs, b)
+			}
+		}
+	}
+
+	var figures []string
+	minArea := w * h / 100
+	for _, b := range blobs {
+		bw, bh := b.x1-b.x0, b.y1-b.y0
+		if bw*bh < minArea || bw < w/8 || bh < h/10 {
+			continue
+		}
+		aspect := float64(bw) / float64(bh)
+		if aspect < 0.1 || aspect > 10.0 {
+			continue
+		}
+		pad := 10
+		cx0 := b.x0 - pad; if cx0 < 0 { cx0 = 0 }
+		cy0 := b.y0 - pad; if cy0 < 0 { cy0 = 0 }
+		cx1 := b.x1 + pad; if cx1 > w { cx1 = w }
+		cy1 := b.y1 + pad; if cy1 > h { cy1 = h }
+
+		crop := image.NewRGBA(image.Rect(0, 0, cx1-cx0, cy1-cy0))
+		for cy := cy0; cy < cy1; cy++ {
+			for cx := cx0; cx < cx1; cx++ {
+				crop.Set(cx-cx0, cy-cy0, img.At(cx+bounds.Min.X, cy+bounds.Min.Y))
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, crop); err == nil {
+			figures = append(figures, base64.StdEncoding.EncodeToString(buf.Bytes()))
+		}
+	}
+	return figures, nil
 }
 
 // cleanProblemLatex strips markdown fences and leading/trailing prose from a
