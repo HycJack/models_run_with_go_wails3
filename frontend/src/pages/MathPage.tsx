@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { Percent, ImagePlus, Check, Wrench, Copy, CornerDownLeft, Loader2, Sparkles, Square, X, Server } from "lucide-react";
+import { Percent, ImagePlus, Check, Wrench, Copy, CornerDownLeft, Loader2, Sparkles, Square, X, Server, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +16,45 @@ function renderLatex(latex: string): string {
   } catch {
     return `<span class="text-destructive">渲染失败</span>`;
   }
+}
+
+function renderProblem(content: string): string {
+  if (!content) return "";
+  // Quick check: if content is mostly math (no \text or \includegraphics), render directly
+  if (!/\\text\s*\{/.test(content) && !/\\includegraphics/.test(content)) {
+    return renderLatex(content);
+  }
+  // Mixed content: split into math / non-math segments
+  const segments: { math: boolean; text: string }[] = [];
+  const re = /(\$\$[\s\S]*?\$\$|\$[^$]+?\$|\\\[[\s\S]*?\\\]|\\\([^)]*?\\\))/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    if (m.index > last) segments.push({ math: false, text: content.slice(last, m.index) });
+    segments.push({ math: true, text: m[0] });
+    last = re.lastIndex;
+  }
+  if (last < content.length) segments.push({ math: false, text: content.slice(last) });
+  if (segments.length === 0) segments.push({ math: false, text: content });
+
+  return segments.map((seg) => {
+    if (seg.math) {
+      let t = seg.text;
+      if (t.startsWith("$$") && t.endsWith("$$")) t = t.slice(2, -2);
+      else if (t.startsWith("$") && t.endsWith("$")) t = t.slice(1, -1);
+      else if (t.startsWith("\\[") && t.endsWith("\\]")) t = t.slice(2, -2);
+      else if (t.startsWith("\\(") && t.endsWith("\\)")) t = t.slice(2, -2);
+      return renderLatex(t.trim());
+    }
+    // Non-math: replace \includegraphics with placeholder, wrap Chinese in spans
+    let t = seg.text
+      .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, (m) => {
+        const cap = m.match(/\{([^}]*)\}/);
+        return `<span class="inline-flex items-center gap-1 rounded border border-dashed px-2 py-0.5 text-xs text-muted-foreground">[图: ${cap ? cap[1] : "figure"}]</span>`;
+      })
+      .replace(/[\u4e00-\u9fff]+/g, (ch) => `<span class="text-foreground">${ch}</span>`);
+    return t;
+  }).join("");
 }
 
 export default function MathPage() {
@@ -33,6 +72,7 @@ export default function MathPage() {
   const [textModel, setTextModel] = useState("");
   const [visionModel, setVisionModel] = useState("");
   const [zoom, setZoom] = useState(false);
+  const [imgMode, setImgMode] = useState<"formula" | "problem">("formula");
 
   useEffect(() => {
     (async () => {
@@ -62,19 +102,23 @@ export default function MathPage() {
     } catch (e) { console.error(e); }
   };
 
-  const toLatex = async (source: "nl" | "image") => {
+  const toLatex = async (source: "nl" | "image" | "problem") => {
     setBusy(true);
     try {
       const l = source === "nl"
         ? (backend === "ollama"
             ? await OllamaService.ToLatex(textModel, nl)
             : await MathService.ToLatex(nl))
+        : source === "problem"
+        ? (backend === "ollama"
+            ? await OllamaService.VisionToProblem(visionModel, imageB64!)
+            : await MathService.OcrToLatex(imageB64!))
         : (backend === "ollama"
             ? await OllamaService.VisionToLatex(visionModel, imageB64!)
             : await MathService.OcrToLatex(imageB64!));
       await apply(l);
       setMode("edit");
-      toast("已生成 LaTeX");
+      toast(source === "problem" ? "已识别题目内容" : "已生成 LaTeX");
     } catch (e) { toast(String(e), true); }
     finally { setBusy(false); }
   };
@@ -181,7 +225,7 @@ export default function MathPage() {
             </div>
             <div className="flex items-center gap-2 overflow-hidden">
               <label className="shrink-0 cursor-pointer">
-                <Button asChild variant="outline"><span><ImagePlus className="h-4 w-4" />公式图片</span></Button>
+                <Button asChild variant="outline"><span><ImagePlus className="h-4 w-4" />图片</span></Button>
                 <input type="file" accept="image/*" className="hidden"
                   onChange={(e) => e.target.files?.[0] && pickImage(e.target.files[0])} />
               </label>
@@ -195,16 +239,30 @@ export default function MathPage() {
                       <X className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                  <Button variant="secondary" onClick={() => toLatex("image")} disabled={busy}>
-                    <Percent className="h-4 w-4" />图片→LaTeX
-                  </Button>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1 rounded-lg border p-0.5">
+                      <button onClick={() => setImgMode("formula")}
+                        className={`rounded-md px-2 py-0.5 text-xs ${imgMode === "formula" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                        公式
+                      </button>
+                      <button onClick={() => setImgMode("problem")}
+                        className={`rounded-md px-2 py-0.5 text-xs ${imgMode === "problem" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                        完整题目
+                      </button>
+                    </div>
+                    <Button variant="secondary" onClick={() => toLatex(imgMode === "problem" ? "problem" : "image")} disabled={busy}>
+                      <Percent className="h-4 w-4" />{imgMode === "problem" ? "识别题目" : "公式→LaTeX"}
+                    </Button>
+                  </div>
                   {busy && <Button variant="ghost" onClick={stop}><Square className="h-4 w-4 fill-current" />停止</Button>}
                 </>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
               {backend === "ollama"
-                ? "图片识别：MiniCPM-V 视觉模型直接看图输出公式（无需 OCR）"
+                ? imgMode === "problem"
+                  ? "完整题目识别：MiniCPM-V 看图输出文字+公式+图形占位的完整 LaTeX"
+                  : "公式识别：MiniCPM-V 视觉模型直接看图输出公式（无需 OCR）"
                 : "图片识别：先 PP-OCR 提文字，再交给模型整理成 LaTeX（适合印刷体公式）"}
             </p>
           </CardContent>
@@ -241,8 +299,12 @@ export default function MathPage() {
         </CardHeader>
         <CardContent>
           {result ? (
-            <div className="overflow-x-auto rounded-lg border bg-muted p-5 text-center"
-              dangerouslySetInnerHTML={{ __html: renderLatex(result) }} />
+            <div className="overflow-x-auto rounded-lg border bg-muted p-5"
+              dangerouslySetInnerHTML={{
+                __html: /\\text\s*\{|\\includegraphics|\\begin\{/.test(result)
+                  ? renderProblem(result)
+                  : renderLatex(result)
+              }} />
           ) : (
             <p className="text-sm text-muted-foreground">生成或编辑 LaTeX 后在此预览</p>
           )}

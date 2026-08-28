@@ -195,6 +195,54 @@ func (s *OllamaService) VisionToLatex(model, imageB64 string) (string, error) {
 	return cleanLatex(out), nil
 }
 
+// VisionToProblem sends a problem image (containing text + formulas + figures)
+// to a multimodal Ollama model and returns the full problem reproduced in
+// LaTeX — text as \text{}, formulas in math mode, figures as placeholders.
+func (s *OllamaService) VisionToProblem(model, imageB64 string) (string, error) {
+	prompt := `你是数学题目识别助手。请完整识别图片中的所有内容，包括：
+1. 题目文字（题号、题干、选项等），用 \text{} 包裹
+2. 数学公式，用 $...$ 或 $$...$$ 表示
+3. 图片中的图形/图表，用 \includegraphics[width=0.6\linewidth]{figure} 占位
+
+输出要求：
+- 保持题目的原始结构和排版顺序
+- 文字部分用 \text{} 包裹，保持中文
+- 公式用标准 LaTeX 数学模式
+- 图形用 \includegraphics 占位
+- 不要添加解释，只输出 LaTeX 内容
+- 使用 align* 环境对齐多行公式（如有）`
+	msgs := []ollamaMessage{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: "完整识别并输出这道题目的所有内容为 LaTeX 格式", Images: []string{imageB64}},
+	}
+	out, err := s.chat(model, msgs, map[string]any{"temperature": 0.05, "num_predict": 2048})
+	if err != nil {
+		return "", err
+	}
+	return cleanProblemLatex(out), nil
+}
+
+// cleanProblemLatex strips markdown fences and leading/trailing prose from a
+// full-problem LaTeX block (unlike cleanLatex which expects a single formula).
+func cleanProblemLatex(s string) string {
+	s = strings.TrimSpace(s)
+	// strip markdown code fences
+	if i := strings.Index(s, "```"); i >= 0 {
+		j := strings.Index(s[i+3:], "```")
+		if j >= 0 {
+			s = s[i+3 : i+3+j]
+		}
+	}
+	s = strings.TrimSpace(s)
+	// strip leading "```latex" if still present
+	for _, prefix := range []string{"```latex", "```tex", "```"} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimPrefix(s, prefix)
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // ToLatex converts natural language to LaTeX via an Ollama text model.
 func (s *OllamaService) ToLatex(model, text string) (string, error) {
 	out, err := s.Generate(model, "将下面这段自然语言描述转换为一个 LaTeX 数学公式。\n描述："+text,
