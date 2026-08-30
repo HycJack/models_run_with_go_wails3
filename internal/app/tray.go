@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 // setupTrayAndShortcuts creates the system tray with a menu, registers global
 // shortcuts for one-shot OCR, and makes the main window hide-to-tray instead of
 // quitting when closed.
-func setupTrayAndShortcuts(state *State) {
+func SetupTrayAndShortcuts(state *State) {
 	app := state.app
 
 	tray := app.SystemTray.New()

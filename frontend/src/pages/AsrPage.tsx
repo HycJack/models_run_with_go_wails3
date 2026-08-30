@@ -7,19 +7,25 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/lib/toast";
-import { AsrService } from "@bindings/cpm_orc";
+import { AsrService } from "@bindings/cpm_orc/internal/app";
 
 export default function AsrPage() {
   const [backend, setBackend] = useState("sensevoice");
   const [svDir, setSvDir] = useState("");
   const [whisperBin, setWhisperBin] = useState("");
   const [whisperModel, setWhisperModel] = useState("");
+  const [mossBin, setMossBin] = useState("");
+  const [mossModel, setMossModel] = useState("");
+  const [mossBinReady, setMossBinReady] = useState(false);
+  const [mossModelReady, setMossModelReady] = useState(false);
   const [ready, setReady] = useState(false);
   const [showWhisper, setShowWhisper] = useState(false);
+  const [showMoss, setShowMoss] = useState(false);
   const [lang, setLang] = useState("auto");
   const [audioName, setAudioName] = useState("");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [result, setResult] = useState("尚未转写");
+  const [segments, setSegments] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recSec, setRecSec] = useState(0);
@@ -32,7 +38,15 @@ export default function AsrPage() {
       setSvDir(st.senseVoiceDir || "");
       setWhisperBin(st.binPath || "");
       setWhisperModel(st.modelPath || "");
-      setReady(st.backend === "whisper" ? (st.binReady && st.modelReady) : st.senseVoiceReady);
+      setMossBin(st.mossBin || "");
+      setMossModel(st.mossModel || "");
+      setMossBinReady(st.mossBinReady || false);
+      setMossModelReady(st.mossModelReady || false);
+      setReady(
+        st.backend === "whisper" ? (st.binReady && st.modelReady) :
+        st.backend === "moss" ? (st.mossBinReady && st.mossModelReady) :
+        st.senseVoiceReady
+      );
       setRecording(st.recording);
     } catch (e) { console.error(e); }
   }, []);
@@ -42,6 +56,7 @@ export default function AsrPage() {
   const transcribe = async (bytes: string, name: string) => {
     setBusy(true);
     setResult("转写中…");
+    setSegments([]);
     try {
       const text = await AsrService.TranscribeBase64(bytes, lang, name);
       setResult(text || "(空)");
@@ -84,7 +99,7 @@ export default function AsrPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">语音识别</h1>
-          <p className="mt-1 text-sm text-muted-foreground">FunASR SenseVoiceSmall（ONNX）与 whisper.cpp（Metal），支持文件与录音。</p>
+          <p className="mt-1 text-sm text-muted-foreground">SenseVoice（ONNX）、whisper.cpp（Metal）、MOSS-Transcribe-Diarize（说话人分离，CPU）</p>
         </div>
         <Badge variant={recording ? "warning" : ready ? "success" : "secondary"}>{recording ? "录音中" : ready ? "就绪" : "未就绪"}</Badge>
       </div>
@@ -93,19 +108,23 @@ export default function AsrPage() {
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <CardTitle className="flex items-center gap-2"><Settings2 className="h-4 w-4" />引擎与模型</CardTitle>
           <Select value={backend} onValueChange={async (v) => { try { await AsrService.SetBackend(v); setBackend(v); await refresh(); } catch (e) { toast(String(e), true); } }}>
-            <SelectTrigger className="w-60"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="sensevoice">FunASR SenseVoiceSmall（中文优，内置标点）</SelectItem>
+              <SelectItem value="sensevoice">SenseVoice（中文优，内置标点）</SelectItem>
               <SelectItem value="whisper">whisper.cpp（Metal）</SelectItem>
+              <SelectItem value="moss">MOSS-Transcribe-Diarize（说话人分离+时间戳，CPU）</SelectItem>
             </SelectContent>
           </Select>
         </CardHeader>
         <CardContent className="space-y-3">
+          {/* SenseVoice */}
           <div className="flex items-center gap-2">
             <Label className="w-36 shrink-0">SenseVoice 目录</Label>
             <Input value={svDir} onChange={(e) => setSvDir(e.target.value)} />
             <Button variant="outline" onClick={async () => { try { await AsrService.SetSenseVoiceDir(svDir); await refresh(); toast("SenseVoice 加载成功"); } catch (e) { toast(String(e), true); } }}>加载</Button>
           </div>
+
+          {/* whisper */}
           <Button size="sm" variant="ghost" onClick={() => setShowWhisper(!showWhisper)}>
             <Settings2 className="h-4 w-4" />whisper.cpp 配置（备用引擎）
           </Button>
@@ -122,6 +141,31 @@ export default function AsrPage() {
                 <Button size="sm" variant="outline" onClick={async () => { try { await AsrService.SetModel(whisperModel); toast("已保存"); } catch (e) { toast(String(e), true); } }}>设置</Button>
                 <Button size="sm" onClick={async () => { try { await AsrService.DownloadModel(); await refresh(); toast("模型下载完成"); } catch (e) { toast(String(e), true); } }}><Download className="h-4 w-4" />下载</Button>
               </div>
+            </div>
+          )}
+
+          {/* MOSS */}
+          <Button size="sm" variant="ghost" onClick={() => setShowMoss(!showMoss)}>
+            <Settings2 className="h-4 w-4" />MOSS-Transcribe-Diarize 配置（CPU，无需 Python）
+          </Button>
+          {showMoss && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Label className="w-36 shrink-0">moss-transcribe</Label>
+                <Input value={mossBin} onChange={(e) => setMossBin(e.target.value)} placeholder="moss-transcribe 二进制路径" />
+                <Button size="sm" variant="outline" onClick={async () => { try { await AsrService.SetMossBin(mossBin); toast("已保存"); } catch (e) { toast(String(e), true); } }}>设置</Button>
+                <Badge variant={mossBinReady ? "success" : "secondary"}>{mossBinReady ? "已找到" : "未找到"}</Badge>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label className="w-36 shrink-0">GGUF 模型</Label>
+                <Input value={mossModel} onChange={(e) => setMossModel(e.target.value)} placeholder="moss-transcribe-q5_k.gguf 路径" />
+                <Button size="sm" variant="outline" onClick={async () => { try { await AsrService.SetMossModel(mossModel); toast("已保存"); } catch (e) { toast(String(e), true); } }}>设置</Button>
+                <Button size="sm" onClick={async () => { try { await AsrService.DownloadMossModel(); await refresh(); toast("模型下载完成"); } catch (e) { toast(String(e), true); } }}><Download className="h-4 w-4" />下载</Button>
+                <Badge variant={mossModelReady ? "success" : "secondary"}>{mossModelReady ? "已找到" : "未找到"}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                先构建 CLI：<code>git clone --recursive https://github.com/mudler/moss-transcribe.cpp && cd moss-transcribe.cpp && cmake -B build && cmake --build build -j</code>
+              </p>
             </div>
           )}
         </CardContent>
@@ -164,7 +208,7 @@ export default function AsrPage() {
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <CardTitle className="flex items-center gap-2"><Mic className="h-4 w-4" />转写结果</CardTitle>
-            <Badge>{backend === "whisper" ? "whisper" : "SenseVoice"}</Badge>
+            <Badge>{backend === "whisper" ? "whisper" : backend === "moss" ? "MOSS" : "SenseVoice"}</Badge>
           </CardHeader>
           <CardContent>
             <pre className="max-h-[360px] overflow-y-auto whitespace-pre-wrap break-all rounded-lg border bg-muted p-3 font-mono text-sm">{result}</pre>

@@ -25,8 +25,10 @@ var (
 	emptySqrtRe  = regexp.MustCompile(`\\sqrt(?:\s*\[[^\]]*\])?\s*\{\s*\}`)
 	emptySubRe   = regexp.MustCompile(`_\s*\{\s*\}`)
 	emptySupRe   = regexp.MustCompile(`\^\s*\{\s*\}`)
-	mathSignalRe = regexp.MustCompile(`[\\=+\-*/^_<>&|()[\]{}]|\d`)
+	mathSignalRe = regexp.MustCompile(`[\\$=+\-*/^_<>&|()[\]{}]|\d`)
 	wordRe       = regexp.MustCompile(`[A-Za-z]{2,}`)
+	cmdRe        = regexp.MustCompile(`\\[A-Za-z]+`)
+	danglingOpRe = regexp.MustCompile(`(?:\^|_|[=+\-*/<>&|])\s*$`)
 )
 
 // Validate checks a LaTeX formula structurally and heuristically.
@@ -37,8 +39,11 @@ func Validate(latex string) Result {
 	checks := []Check{
 		checkBraceBalance(latex),
 		checkEnvBalance(latex),
+		checkDollarBalance(latex),
+		checkLeftRightBalance(latex),
 		checkFormulaContent(latex),
 		checkEmptyStructures(latex),
+		checkTextContent(latex),
 	}
 	valid := true
 	for _, c := range checks {
@@ -70,6 +75,42 @@ func checkBraceBalance(latex string) Check {
 		return Check{OK: false, Type: "brace", Detail: "存在未闭合的花括号（缺 " + itoa(depth) + " 个 }）"}
 	}
 	return Check{OK: true, Type: "brace", Detail: "花括号平衡"}
+}
+
+func checkDollarBalance(latex string) Check {
+	count := 0
+	i := 0
+	for i < len(latex) {
+		if latex[i] == '\\' && i+1 < len(latex) {
+			i += 2 // skip \$ and any other escaped char
+			continue
+		}
+		if latex[i] == '$' {
+			count++
+		}
+		i++
+	}
+	if count%2 != 0 {
+		return Check{OK: false, Type: "dollar", Detail: "存在未闭合的 $ 定界符"}
+	}
+	return Check{OK: true, Type: "dollar", Detail: "$ 定界符配对"}
+}
+
+var (
+	leftRightLeftRe  = regexp.MustCompile(`\\left[\(\[\{\\.|]`)
+	leftRightRightRe = regexp.MustCompile(`\\right[\)\]\}\\.|]`)
+)
+
+func checkLeftRightBalance(latex string) Check {
+	lc := len(leftRightLeftRe.FindAllString(latex, -1))
+	rc := len(leftRightRightRe.FindAllString(latex, -1))
+	if lc > rc {
+		return Check{OK: false, Type: "leftright", Detail: "缺少 " + itoa(lc-rc) + " 个 \\right"}
+	}
+	if rc > lc {
+		return Check{OK: false, Type: "leftright", Detail: "多余的 \\right（多 " + itoa(rc-lc) + " 个）"}
+	}
+	return Check{OK: true, Type: "leftright", Detail: "\\left/\\right 配对"}
 }
 
 func checkEnvBalance(latex string) Check {
@@ -104,10 +145,15 @@ func checkEnvBalance(latex string) Check {
 }
 
 func checkFormulaContent(latex string) Check {
-	if mathSignalRe.MatchString(latex) {
+	// Prose inside \text{...} must not count as a math signal (braces and the
+	// \text command would otherwise make any \text{}-wrapped prose pass this
+	// check). Strip the spans, then look for real math elsewhere.
+	if mathSignalRe.MatchString(stripTextSpans(latex)) {
 		return Check{OK: true, Type: "content", Detail: "包含公式内容"}
 	}
-	words := wordRe.FindAllString(latex, -1)
+	// Count prose words on the input with LaTeX commands removed, so command
+	// names (\text, \frac ...) are not mistaken for English words.
+	words := wordRe.FindAllString(cmdRe.ReplaceAllString(latex, ""), -1)
 	if len(words) >= 3 {
 		return Check{OK: false, Type: "content", Detail: "看起来像普通文字而非公式"}
 	}
@@ -120,7 +166,19 @@ func checkEmptyStructures(latex string) Check {
 			return Check{OK: false, Type: "structure", Detail: "存在空结构（如 \\frac{}{} / \\sqrt{} / _{}/^{}）"}
 		}
 	}
+	if danglingOpRe.MatchString(latex) {
+		return Check{OK: false, Type: "structure", Detail: "末尾存在悬挂的运算符/上下标（如 x^2+ / x^）"}
+	}
 	return Check{OK: true, Type: "structure", Detail: "结构完整"}
+}
+
+// checkTextContent verifies that \text{...} arguments contain only plain text,
+// not LaTeX/math content (formulas must live in $...$, not inside \text{}).
+func checkTextContent(latex string) Check {
+	if bad, found := textHasMath(latex); found {
+		return Check{OK: false, Type: "text", Detail: "\\text{} 内不应包含 LaTeX 内容：" + bad}
+	}
+	return Check{OK: true, Type: "text", Detail: "\\text{} 内仅包含文本"}
 }
 
 func itoa(n int) string {

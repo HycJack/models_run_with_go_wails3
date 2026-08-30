@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/lib/toast";
 import { Events } from "@wailsio/runtime";
-import { RuntimeService } from "@bindings/cpm_orc";
+import { RuntimeService } from "@bindings/cpm_orc/internal/app";
 
 export default function RuntimePage() {
   const [rt, setRt] = useState<any>(null);

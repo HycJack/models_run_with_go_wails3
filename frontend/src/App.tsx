@@ -7,6 +7,7 @@ import {
   Settings,
   ScanBarcode,
   Percent,
+  ScanSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToasts } from "@/lib/toast";
@@ -16,6 +17,7 @@ import AsrPage from "@/pages/AsrPage";
 import ChatPage from "@/pages/ChatPage";
 import RuntimePage from "@/pages/RuntimePage";
 import MathPage from "@/pages/MathPage";
+import YoloPage from "@/pages/YoloPage";
 
 const NAV = [
   { key: "models", label: "模型管理", icon: Boxes },
@@ -23,6 +25,7 @@ const NAV = [
   { key: "asr", label: "语音识别", icon: Mic },
   { key: "chat", label: "LLM 对话", icon: MessageSquareText },
   { key: "math", label: "公式助手", icon: Percent },
+  { key: "yolo", label: "YOLO 检测", icon: ScanSearch },
   { key: "runtime", label: "运行环境", icon: Settings },
 ] as const;
 
@@ -76,6 +79,7 @@ export default function App() {
         {tab === "asr" && <AsrPage />}
         {tab === "chat" && <ChatPage />}
         {tab === "math" && <MathPage />}
+        {tab === "yolo" && <YoloPage />}
         {tab === "runtime" && <RuntimePage />}
       </main>
 

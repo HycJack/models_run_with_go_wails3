@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/base64"
@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // saveClipboardImage writes the image currently on the clipboard to a PNG file.
@@ -20,22 +21,38 @@ func saveClipboardImage(path string) error {
 			"set f to open for access POSIX file %q with write permission\n"+
 			"write d to f\n"+
 			"close access f", path)
-	return exec.Command("osascript", "-e", script).Run()
+	return exec.Command("oscript", "-e", script).Run()
 }
 
 // captureScreenSelection interactively lets the user select a screen region and
-// saves it as a PNG.
-func captureScreenSelection(path string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("screencapture", "-i", path).Run()
-	case "windows":
-		// PowerShell + System.Drawing region capture is intentionally avoided;
-		// use the built-in snipping tool instead.
-		return fmt.Errorf("screen capture OCR is not yet supported on Windows")
-	default:
-		return fmt.Errorf("screen capture OCR is not yet supported on %s", runtime.GOOS)
+// saves it as a PNG. The app window is hidden via AppleScript before capture
+// and restored afterwards so the user can select content behind the app.
+func captureScreenSelection(path string, state *State) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("screen capture is not yet supported on %s", runtime.GOOS)
 	}
+
+	// Get the frontmost app name, hide it, take screenshot, restore it.
+	getName := `tell application "System Events" to get name of first process whose frontmost is true`
+	nameOut, err := exec.Command("oscript", "-e", getName).Output()
+	if err == nil && len(nameOut) > 0 {
+		appName := strings.TrimSpace(string(nameOut))
+		if appName != "" {
+			exec.Command("oscript", "-e",
+				fmt.Sprintf(`tell application "System Events" to set visible of process "%s" to false`, appName)).Run()
+			time.Sleep(400 * time.Millisecond)
+		}
+	}
+
+	err = exec.Command("screencapture", "-i", path).Run()
+
+	// Restore whatever is frontmost (may differ after user switched apps).
+	showScript := `tell application "System Events" to set visible of (first process whose frontmost is true) to true`
+	exec.Command("oscript", "-e", showScript).Run()
+	if state != nil {
+		state.ShowMainWindow()
+	}
+	return err
 }
 
 // OcrClipboard OCRs the current clipboard image and reports the result.
@@ -52,7 +69,7 @@ func (s *State) OcrClipboard() (string, error) {
 func (s *State) OcrScreenshot() (string, error) {
 	tmp := filepath.Join(os.TempDir(), "cpm-screenshot.png")
 	os.Remove(tmp)
-	if err := captureScreenSelection(tmp); err != nil {
+	if err := captureScreenSelection(tmp, s); err != nil {
 		return "", fmt.Errorf("截图失败: %w", err)
 	}
 	return s.recognizeAndReport(tmp, "screenshot")

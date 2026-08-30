@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/base64"
@@ -16,7 +16,7 @@ func TestAsrTranscribe(t *testing.T) {
 	if os.Getenv("CPMM_ASR_TEST") != "1" {
 		t.Skip("set CPMM_ASR_TEST=1 to run the ASR test")
 	}
-	st := newState(config.Default())
+	st := New(config.Default())
 	svc := NewAsrService(st)
 	status := svc.Status()
 	if !status.BinReady {

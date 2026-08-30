@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/lib/toast";
 import { fmtBytes, fmtNum, kindBadge } from "@/lib/format";
-import { HFHubService, RuntimeService } from "@bindings/cpm_orc";
+import { HFHubService, RuntimeService } from "@bindings/cpm_orc/internal/app";
 
 export default function ModelsPage() {
   const [query, setQuery] = useState("");

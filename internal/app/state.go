@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -14,6 +14,7 @@ import (
 	"cpm_orc/internal/llm"
 	"cpm_orc/internal/ort"
 	"cpm_orc/internal/paddleocr"
+	"cpm_orc/internal/yolo"
 )
 
 // State holds the shared application resources used by the services.
@@ -23,14 +24,16 @@ type State struct {
 	app         *application.App
 	ocr         *paddleocr.Engine
 	llm         *llm.Engine
+	yolo        *yolo.Engine
 	mainWindow  *application.WebviewWindow
 }
 
-func newState(cfg *config.Config) *State {
+func New(cfg *config.Config) *State {
 	return &State{
 		cfg: cfg,
 		ocr: paddleocr.NewEngine(),
 		llm: llm.NewEngine(4),
+		yolo: yolo.NewEngine(4),
 	}
 }
 
@@ -62,6 +65,14 @@ func (s *State) ShowMainWindow() {
 	}
 }
 
+// HideMainWindow hides the main window so the user can interact with content
+// behind it (e.g. for screen capture).
+func (s *State) HideMainWindow() {
+	if s.mainWindow != nil {
+		s.mainWindow.Hide()
+	}
+}
+
 // MainWindow returns the main window (may be nil).
 func (s *State) MainWindow() *application.WebviewWindow { return s.mainWindow }
 
@@ -74,16 +85,9 @@ func (s *State) Emit(name string, data any) {
 }
 
 // ConfigPath returns the config file location.
-func (s *State) ConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cpm_orc", "config.json")
-}
+func (s *State) ConfigPath() string { return config.DefaultPath() }
 
-// configPath returns the global config file location.
-func configPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cpm_orc", "config.json")
-}
+var _ = filepath.Join
 
 // Save persists the current configuration.
 func (s *State) SaveConfig() error {
@@ -98,6 +102,9 @@ func (s *State) Orc() *paddleocr.Engine { return s.ocr }
 
 // LLM returns the LLM engine.
 func (s *State) LLM() *llm.Engine { return s.llm }
+
+// Yolo returns the YOLO detection engine.
+func (s *State) Yolo() *yolo.Engine { return s.yolo }
 
 // OpenFolder opens a directory in the platform file manager.
 func (s *State) OpenFolder(path string) error {

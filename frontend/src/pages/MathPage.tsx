@@ -1,21 +1,34 @@
 import { useState, useEffect } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { Percent, ImagePlus, Check, Wrench, Copy, CornerDownLeft, Loader2, Sparkles, Square, X, Server, FileText } from "lucide-react";
+import { Percent, ImagePlus, Check, Wrench, Copy, CornerDownLeft, Loader2, Sparkles, Square, X, Server, FileText, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
-import { MathService, OllamaService, LlmService } from "@bindings/cpm_orc";
+import { MathService, OllamaService, LlmService } from "@bindings/cpm_orc/internal/app";
 
 function renderLatex(latex: string, display = true): string {
+  // KaTeX rejects a literal '$' in math mode. Math segments are already
+  // delimited by renderProblem, so drop any remaining '$' except escaped \$ .
+  const src = latex.replace(/\\\$/g, "\u0000").replace(/\$/g, "").replace(/\u0000/g, "\\$");
   try {
-    return katex.renderToString(latex, { throwOnError: false, displayMode: display, strict: false });
+    return katex.renderToString(src, { throwOnError: false, displayMode: display, strict: false });
   } catch {
     return `<span class="text-destructive">渲染失败</span>`;
   }
+}
+
+// sanitizeHtml strips script tags, event-handler attributes and javascript:
+// URLs from model-generated HTML/SVG before it is injected via
+// dangerouslySetInnerHTML (local model output is not fully trusted).
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<\s*\/?\s*script[\s\S]*?>/gi, "")
+    .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/javascript\s*:/gi, "");
 }
 
 function renderProblem(content: string): string {
@@ -35,7 +48,7 @@ function renderProblem(content: string): string {
   if (last < content.length) segments.push({ math: false, text: content.slice(last) });
   if (segments.length === 0) segments.push({ math: false, text: content });
 
-  return segments.map((seg) => {
+  const html = segments.map((seg) => {
     if (seg.math) {
       let t = seg.text;
       let isDisplay = false;
@@ -46,6 +59,7 @@ function renderProblem(content: string): string {
       return renderLatex(t.trim(), isDisplay);
     }
     let t = seg.text
+      .replace(/\\text\s*\{([^}]*)\}/g, "$1")
       .replace(/\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}/g, (m) => {
         const cap = m.match(/\{([^}]*)\}/);
         return `<span class="inline-flex items-center gap-1 rounded border border-dashed px-2 py-0.5 text-xs text-muted-foreground">[图: ${cap ? cap[1] : "figure"}]</span>`;
@@ -53,9 +67,8 @@ function renderProblem(content: string): string {
       .replace(/[\u4e00-\u9fff]+/g, (ch) => `<span class="text-foreground">${ch}</span>`);
     return t;
   }).join("");
-}
-
-export default function MathPage() {
+  return sanitizeHtml(html);
+}export default function MathPage() {
   const [nl, setNl] = useState("");
   const [imageB64, setImageB64] = useState<string | null>(null);
   const [imageMeta, setImageMeta] = useState("data:image/png;base64");
@@ -92,11 +105,16 @@ export default function MathPage() {
   }, []);
 
   const apply = async (l: string) => {
-    setLatex(l);
-    setResult(l);
+    let repaired = l;
+    try {
+      const r: any = await MathService.Repair(l);
+      repaired = r.latex;
+    } catch (e) { /* keep original */ }
+    setLatex(repaired);
+    setResult(repaired);
     setChecks([]);
     try {
-      const v: any = await MathService.Validate(l);
+      const v: any = await MathService.Validate(repaired);
       setChecks(v.checks || []);
     } catch (e) { console.error(e); }
   };
@@ -137,6 +155,22 @@ export default function MathPage() {
       const combined = (latex ? latex + "\n\n" : "") + svg;
       await apply(combined);
       toast("已识别配图");
+    } catch (e) { toast(String(e), true); }
+    finally { setBusy(false); }
+  };
+
+  const screenshotRecognize = async (mode: "formula" | "problem") => {
+    if (backend !== "ollama") { toast("截图识别仅支持 Ollama 后端", true); return; }
+    setBusy(true);
+    try {
+      const [result, img] = mode === "problem"
+        ? await OllamaService.ScreenshotToProblem(visionModel)
+        : await OllamaService.ScreenshotToLatex(visionModel);
+      if (img) { setImageB64(img); setImageMeta("data:image/png;base64"); }
+      await apply(result);
+      setFiguresSvg("");
+      setMode("edit");
+      toast(mode === "problem" ? "已截图识别题目" : "已截图识别公式");
     } catch (e) { toast(String(e), true); }
     finally { setBusy(false); }
   };
@@ -241,12 +275,22 @@ export default function MathPage() {
               </Button>
               {busy && <Button variant="ghost" onClick={stop}><Square className="h-4 w-4 fill-current" />停止</Button>}
             </div>
-            <div className="flex items-center gap-2 overflow-hidden">
+            <div className="flex flex-wrap items-center gap-2">
               <label className="shrink-0 cursor-pointer">
                 <Button asChild variant="outline"><span><ImagePlus className="h-4 w-4" />图片</span></Button>
                 <input type="file" accept="image/*" className="hidden"
                   onChange={(e) => e.target.files?.[0] && pickImage(e.target.files[0])} />
               </label>
+              {backend === "ollama" && (
+                <Button variant="outline" onClick={() => screenshotRecognize("formula")} disabled={busy} title="截取屏幕区域，识别公式">
+                  <Camera className="h-4 w-4" />截图公式
+                </Button>
+              )}
+              {backend === "ollama" && (
+                <Button variant="outline" onClick={() => screenshotRecognize("problem")} disabled={busy} title="截取屏幕区域，识别完整题目">
+                  <Camera className="h-4 w-4" />截图题目
+                </Button>
+              )}
               {imageB64 && (
                 <>
                   <div className="relative shrink-0">
@@ -326,7 +370,7 @@ export default function MathPage() {
           {result ? (
             <div className="overflow-x-auto rounded-lg border bg-muted p-5 leading-relaxed"
               dangerouslySetInnerHTML={{
-                __html: /\\text\s*\{|<svg|<img\s+src=|<details|\\includegraphics|\\begin\{/.test(result)
+                __html: /\\text\s*\{|<svg|<img\s+src=|<details|\\includegraphics|\$|\\\[|\\\(/.test(result)
                   ? renderProblem(result)
                   : renderLatex(result, true)
               }} />

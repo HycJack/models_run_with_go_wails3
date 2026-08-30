@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/lib/toast";
 import { Events } from "@wailsio/runtime";
-import { LlmService } from "@bindings/cpm_orc";
+import { LlmService } from "@bindings/cpm_orc/internal/app";
 
 type Msg = { role: "user" | "assistant"; text: string; image?: string };
 

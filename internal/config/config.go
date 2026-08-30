@@ -38,6 +38,12 @@ type Config struct {
 	SenseVoiceDir string `json:"senseVoiceDir"`
 	// OllamaHost is the Ollama server base URL (OpenAI-compatible chat API).
 	OllamaHost string `json:"ollamaHost"`
+	// YoloDir is where YOLO ONNX models live.
+	YoloDir string `json:"yoloDir"`
+	// MossBin is the path to the moss-transcribe CLI binary.
+	MossBin string `json:"mossBin"`
+	// MossModel is the path to a moss-transcribe GGUF model.
+	MossModel string `json:"mossModel"`
 }
 
 // Default returns the default configuration rooted in the user's home
@@ -58,6 +64,9 @@ func Default() *Config {
 		AsrBackend:   "sensevoice",
 		SenseVoiceDir: filepath.Join(base, "models", "sensevoice"),
 		OllamaHost:    "http://localhost:11434",
+		YoloDir:       filepath.Join(base, "models", "yolo"),
+		MossBin:       filepath.Join(base, "moss-transcribe", "build", "moss-transcribe"),
+		MossModel:     filepath.Join(base, "models", "moss-transcribe", "moss-transcribe-q5_k.gguf"),
 	}
 }
 
@@ -115,10 +124,17 @@ func (c *Config) Save(path string) error {
 
 // EnsureDirs creates all configured directories.
 func (c *Config) EnsureDirs() error {
-	for _, d := range []string{c.ModelRoot, filepath.Dir(c.OnnxLibPath), c.OcrDir, c.LlmDir} {
+	for _, d := range []string{c.ModelRoot, filepath.Dir(c.OnnxLibPath), c.OcrDir, c.LlmDir, c.YoloDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// DefaultPath returns the standard on-disk location of the config file:
+// ~/.cpm_orc/config.json.
+func DefaultPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cpm_orc", "config.json")
 }

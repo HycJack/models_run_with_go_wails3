@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -11,6 +11,8 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -196,6 +198,46 @@ func (s *OllamaService) VisionToLatex(model, imageB64 string) (string, error) {
 		return "", err
 	}
 	return cleanLatex(out), nil
+}
+
+// ScreenshotToLatex interactively captures a screen region and sends it to the
+// vision model for LaTeX recognition.
+func (s *OllamaService) ScreenshotToLatex(model string) (string, string, error) {
+	tmp := filepath.Join(os.TempDir(), "cpm-screenshot.png")
+	os.Remove(tmp)
+	if err := captureScreenSelection(tmp, s.state); err != nil {
+		return "", "", fmt.Errorf("截图失败: %w", err)
+	}
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		return "", "", fmt.Errorf("读取截图失败: %w", err)
+	}
+	imgB64 := base64.StdEncoding.EncodeToString(data)
+	out, err := s.VisionToLatex(model, imgB64)
+	if err != nil {
+		return "", imgB64, err
+	}
+	return out, imgB64, nil
+}
+
+// ScreenshotToProblem interactively captures a screen region and sends it to
+// the vision model for full problem recognition.
+func (s *OllamaService) ScreenshotToProblem(model string) (string, string, error) {
+	tmp := filepath.Join(os.TempDir(), "cpm-screenshot.png")
+	os.Remove(tmp)
+	if err := captureScreenSelection(tmp, s.state); err != nil {
+		return "", "", fmt.Errorf("截图失败: %w", err)
+	}
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		return "", "", fmt.Errorf("读取截图失败: %w", err)
+	}
+	imgB64 := base64.StdEncoding.EncodeToString(data)
+	out, err := s.VisionToProblem(model, imgB64)
+	if err != nil {
+		return "", imgB64, err
+	}
+	return out, imgB64, nil
 }
 
 // VisionToProblem sends a problem image to the vision model and returns the

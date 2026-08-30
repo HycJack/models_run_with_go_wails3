@@ -1,11 +1,14 @@
-package main
+package app
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"cpm_orc/internal/llm"
 	"cpm_orc/internal/paddleocr"
@@ -187,6 +190,30 @@ func (s *MathService) InsertAtCursor(text string) error {
 	if err := s.CopyText(text); err != nil {
 		return err
 	}
+	// Bring our window to the front first so System Events sends the
+	// keystroke to the correct application.
+	s.state.ShowMainWindow()
+	// Brief pause to let the window focus before sending the keystroke.
+	time.Sleep(150 * time.Millisecond)
 	script := `tell application "System Events" to keystroke "v" using command down`
-	return exec.Command("osascript", "-e", script).Run()
+	if err := exec.Command("osascript", "-e", script).Run(); err != nil {
+		return fmt.Errorf("粘贴失败，请确认已授予辅助功能权限（系统设置 → 隐私与安全性 → 辅助功能）: %w", err)
+	}
+	return nil
+}
+
+// CaptureScreenshot interactively captures a screen region and returns the
+// image as a base64 string. The caller is responsible for sending it to a
+// vision model for recognition.
+func (s *MathService) CaptureScreenshot() (string, error) {
+	tmp := filepath.Join(os.TempDir(), "cpm-screenshot.png")
+	os.Remove(tmp)
+	if err := captureScreenSelection(tmp, s.state); err != nil {
+		return "", fmt.Errorf("截图失败: %w", err)
+	}
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		return "", fmt.Errorf("读取截图失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }

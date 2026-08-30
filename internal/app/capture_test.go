@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"os"
@@ -20,7 +20,7 @@ func TestClipboardOCR(t *testing.T) {
 	if err := ort.Init(os.Getenv("HOME") + "/.cpm_orc/lib/libonnxruntime.dylib"); err != nil {
 		t.Fatalf("ort: %v", err)
 	}
-	st := newState(config.Default())
+	st := New(config.Default())
 	if err := st.Orc().Load(paddleocr.Models{
 		DetPath:  os.Getenv("HOME") + "/.cpm_orc/models/paddleocr/ch/PP-OCRv6_small_det.onnx",
 		RecPath:  os.Getenv("HOME") + "/.cpm_orc/models/paddleocr/ch/PP-OCRv6_small_rec.onnx",

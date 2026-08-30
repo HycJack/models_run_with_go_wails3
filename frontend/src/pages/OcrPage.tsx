@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/lib/toast";
 import { Events } from "@wailsio/runtime";
-import { OcrService, RuntimeService } from "@bindings/cpm_orc";
+import { OcrService, RuntimeService } from "@bindings/cpm_orc/internal/app";
 
 let currentBoxes: any[] = [];
 
